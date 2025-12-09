@@ -1,14 +1,199 @@
-<!doctype html>
-<html lang="en">
+<!DOCTYPE html>
+<html>
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Hello World</title>
-  <link href='/style.css' rel='stylesheet'>
+  <meta charset="utf-8" />
+  <title>Hike Location Share</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body {
+      font-family: system-ui, sans-serif;
+      padding: 1rem;
+      max-width: 600px;
+      margin: 0 auto;
+    }
+    input {
+      width: 100%;
+      padding: 0.5rem;
+      margin-top: 0.5rem;
+      box-sizing: border-box;
+    }
+    button {
+      padding: 0.6rem 1rem;
+      margin-top: 1rem;
+      cursor: pointer;
+    }
+    .box {
+      border: 1px solid #ddd;
+      border-radius: 6px;
+      padding: 1rem;
+      margin-top: 1rem;
+    }
+    .small {
+      font-size: 0.9rem;
+      color: #555;
+    }
+  </style>
 </head>
 <body>
-  <h1>Hello, world!</h1>
-  <button onclick="console.log('hello');">Press me</button>
-  <script defer type="text/javascript" src="/main.js"></script>
+  <h1>Hike Location Share</h1>
+  <p class="small">
+    This simple app lets you create a link. When someone clicks it and allows location,
+    their location is stored for you.
+  </p>
+
+  <div id="creator" class="box" style="display:none;">
+    <h2>Create a share link</h2>
+    <button id="createLinkBtn">Create link</button>
+
+    <div id="linkArea" style="display:none; margin-top:1rem;">
+      <p>Send this link to your friend:</p>
+      <input id="shareLink" readonly />
+      <p id="waitMsg" class="small">Waiting for their location...</p>
+      <p id="locResult" class="small"></p>
+    </div>
+  </div>
+
+  <div id="receiver" class="box" style="display:none;">
+    <h2>Share my location</h2>
+    <p id="receiverStatus">Preparing...</p>
+  </div>
+
+  <script type="module">
+    // ====== Firebase imports from CDN ======
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-app.js";
+    import {
+      getFirestore,
+      doc,
+      setDoc,
+      getDoc,
+      serverTimestamp
+    } from "https://www.gstatic.com/firebasejs/11.0.0/firebase-firestore.js";
+
+    // ====== Your Firebase config (PASTE YOURS HERE) ======
+    const firebaseConfig = {
+      // TODO: paste your Firebase config here from the Firebase console
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+      projectId: "YOUR_PROJECT_ID",
+      storageBucket: "YOUR_PROJECT_ID.appspot.com",
+      messagingSenderId: "YOUR_SENDER_ID",
+      appId: "YOUR_APP_ID"
+    };
+
+    // ====== Init Firebase ======
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    // ====== Utility: random token ======
+    function randomToken() {
+      return Math.random().toString(36).substring(2, 10);
+    }
+
+    // ====== Check if we have ?token in the URL ======
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get("token");
+
+    const creatorDiv = document.getElementById("creator");
+    const receiverDiv = document.getElementById("receiver");
+
+    if (!token) {
+      // No token -> creator mode
+      creatorDiv.style.display = "block";
+      setupCreatorMode();
+    } else {
+      // Has token -> receiver mode (the person who clicks the link)
+      receiverDiv.style.display = "block";
+      setupReceiverMode(token);
+    }
+
+    // ====== Creator mode ======
+    function setupCreatorMode() {
+      const btn = document.getElementById("createLinkBtn");
+      const linkArea = document.getElementById("linkArea");
+      const shareLinkInput = document.getElementById("shareLink");
+      const waitMsg = document.getElementById("waitMsg");
+      const locResult = document.getElementById("locResult");
+
+      let currentToken = null;
+      let pollIntervalId = null;
+
+      btn.addEventListener("click", () => {
+        currentToken = randomToken();
+        const base = window.location.origin + window.location.pathname;
+        const link = `${base}?token=${currentToken}`;
+        shareLinkInput.value = link;
+        linkArea.style.display = "block";
+        waitMsg.textContent = "Waiting for them to click the link and share location...";
+        locResult.textContent = "";
+
+        if (pollIntervalId) clearInterval(pollIntervalId);
+
+        // Poll Firestore every 5 seconds to see if location is saved
+        pollIntervalId = setInterval(async () => {
+          const ref = doc(db, "links", currentToken);
+          const snap = await getDoc(ref);
+          if (snap.exists()) {
+            const data = snap.data();
+            clearInterval(pollIntervalId);
+            waitMsg.textContent = "Location received:";
+            locResult.textContent =
+              `Lat: ${data.lat.toFixed(5)}, ` +
+              `Lng: ${data.lng.toFixed(5)} ` +
+              (data.accuracy ? `(±${Math.round(data.accuracy)} m)` : "");
+          }
+        }, 5000);
+      });
+    }
+
+    // ====== Receiver mode ======
+    function setupReceiverMode(token) {
+      const statusEl = document.getElementById("receiverStatus");
+
+      if (!navigator.geolocation) {
+        statusEl.textContent = "Geolocation is not supported on this device.";
+        return;
+      }
+
+      statusEl.textContent = "Requesting your location...";
+
+      navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+          const { latitude, longitude, accuracy } = pos.coords;
+          statusEl.textContent = "Sending your location...";
+
+          try {
+            const ref = doc(db, "links", token);
+            await setDoc(ref, {
+              lat: latitude,
+              lng: longitude,
+              accuracy: accuracy ?? null,
+              createdAt: serverTimestamp()
+            });
+
+            statusEl.textContent =
+              "✅ Your location has been shared. You can close this page.";
+          } catch (err) {
+            console.error(err);
+            statusEl.textContent =
+              "❌ Failed to send location. Please try again.";
+          }
+        },
+        (err) => {
+          console.error(err);
+          if (err.code === err.PERMISSION_DENIED) {
+            statusEl.textContent =
+              "You denied location permission. We cannot share your location.";
+          } else {
+            statusEl.textContent = "Could not get your location.";
+          }
+        },
+        {
+          enableHighAccuracy: true,
+          timeout: 15000,
+          maximumAge: 0
+        }
+      );
+    }
+  </script>
 </body>
 </html>
